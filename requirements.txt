@@ -1,0 +1,7 @@
+mne
+scipy
+pyeeg
+pandas
+seaborn
+scikit-learn
+black
