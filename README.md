@@ -6,12 +6,12 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 
 ## ⚙️ Features Extracted
 
-### ✅ Time-domain (Temporal) features
+### Time-domain (Temporal) features
 - Mean, variance, root mean square (RMS)
 - Skewness and kurtosis
 - Signal zero-crossings
 
-### ✅ Frequency-domain (Spectral) features
+### Frequency-domain (Spectral) features
 - **Power Spectral Density (PSD)** using Welch's method
 - Band power & ratios across:
   - Delta (0.5–4 Hz)
@@ -22,7 +22,7 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 - Spectral entropy
 - Peak, median, and total power
 
-### ✅ Nonlinear (Complexity) features
+### Nonlinear (Complexity) features
 - **Hjorth parameters**: activity, mobility, complexity
 - **Fractal dimensions**:
   - Petrosian Fractal Dimension (PFD)
@@ -64,6 +64,24 @@ The extracted features are used to train and evaluate the following classifiers:
 2. Install dependencies:
    ```bash
    pip install -r requirements.txt
+   
+3. Preprocess the data
+   ```bash
+   python preprocessing.py
+
+4. Merge the files into one file for training
+   ```bash
+   python merge.py
+
+5. Run the classification pipeline for the models
+   ```bash
+   python classifiers.py
+
+6. Visualize the results
+   ```bash
+   python plots_results.py
+
+  ---
 
 ## 🧠 Dataset
 [CHB-MIT EEG Dataset](https://physionet.org/content/chbmit/1.0.0/): Pediatric EEG dataset used for seizure detection publicly available on PhysioNet, from patients with epilepsy
