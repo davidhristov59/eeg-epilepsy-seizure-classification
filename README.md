@@ -58,8 +58,8 @@ The extracted features are used to train and evaluate the following classifiers:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/eeg-seizure-prediction.git
-   cd eeg-seizure-prediction
+   git clone https://github.com/davidhristov59/eeg-epilepsy-seizure-classification.git
+   cd eeg-epilepsy-seizure-classification
 
 2. Install dependencies:
    ```bash
