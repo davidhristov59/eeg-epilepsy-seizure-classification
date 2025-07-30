@@ -46,7 +46,7 @@ The extracted features are used to train and evaluate the following classifiers:
 
 ## 🧪 Methods Used
 
-- **Sliding Window Technique**: Processes EEG signals in small overlapping windows (e.g., 1s with 50% overlap) to capture temporal patterns.
+- **Sliding Window Technique**: Processes EEG signals in small overlapping windows (e.g., 5s with 50% overlap) to capture temporal patterns.
 - **Fast Fourier Transform (FFT)**: Converts signal from time to frequency domain.
 - **Welch's Method**: Estimates power spectrum using windowed FFT with averaging.
 - **PyEEG Library**: Used for nonlinear EEG-specific features like Hjorth and fractal dimensions.
