@@ -35,11 +35,11 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 
 The extracted features are used to train and evaluate the following classifiers:
 
+- **Multi Layer Perceptron (MLP)**
 - **Support Vector Machine (SVM)**
 - **Random Forest**
 - **K-Nearest Neighbors (KNN)**
-- **Logistic Regression**
-- **Gradient Boosting (e.g., XGBoost)**
+- **Adaptive Boosting (e.g., AdaBoost)**
 - Performance is evaluated using metrics such as accuracy, precision, recall, F1-score, and confusion matrix.
 
 ---
