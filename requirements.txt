@@ -1,0 +1,11 @@
+mne~=1.8.0
+scipy~=1.13.1
+pyeeg~=0.4.4
+pandas~=2.3.0
+seaborn~=0.13.2
+scikit-learn~=1.2.2
+black
+psutil~=7.0.0
+tqdm~=4.67.1
+numpy~=1.23.5
+torch~=2.8.0
