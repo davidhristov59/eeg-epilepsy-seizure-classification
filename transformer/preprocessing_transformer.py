@@ -29,7 +29,7 @@ class TransformerConfig:
 
 
 class EEGSequenceDataset(Dataset):
-    def __init__(self, sequences: np.ndarray, labels: np.ndarray, metadata: Optional[pd.DataFrame] = None):
+    def __init__(self, batch_files: List[str], indices: List[int]):
         """
         Converts preprocessed EEG sequences into a format that PyTorch DataLoader can use for batch training.
 
@@ -39,20 +39,35 @@ class EEGSequenceDataset(Dataset):
             metadata: Optional metadata for each sequence
         """
 
-        # converts numpy arrays to PyTorch tensors
-        self.sequences = torch.FloatTensor(sequences) # for sequences (neural network input)
-        self.labels = torch.LongTensor(labels) # for labels (classification targets)
-        self.metadata = metadata # optional metadata for sequence tracking
+        self.batch_files = batch_files
+        self.indices = indices
+        self.index_map = {}
+        current_offset = 0
+
+        for batch_file in batch_files:
+            # Load only metadata to get batch size
+            data = np.load(batch_file, allow_pickle=True)
+            batch_size = len(data['labels'])
+
+            for local_idx in range(batch_size):
+                global_idx = current_offset + local_idx
+                if global_idx in indices:
+                    self.index_map[len(self.index_map)] = (batch_file, local_idx)
+
+            current_offset += batch_size
 
     def __len__(self):
-        return len(self.sequences) # returns the total number of sequences
+        return len(self.indices) # returns the total number of sequences
 
-    def __getitem__(self, index):
-        return {
-            'sequence' : self.sequences[index], # EEG data tensor for one sequence
-            'label' : self.labels[index], # seizure classification (0 or 1)
-            'index' : index # position in the dataset for tracking
-        }
+    def __getitem__(self, idx):
+        """Load single sample on demand"""
+        batch_file, local_idx = self.index_map[idx]
+
+        data = np.load(batch_file, allow_pickle=True)
+        sequence = torch.FloatTensor(data['sequences'][local_idx])
+        label = torch.LongTensor([data['labels'][local_idx]])[0]
+
+        return sequence, label
 
 
 class TransformerProcessor:
