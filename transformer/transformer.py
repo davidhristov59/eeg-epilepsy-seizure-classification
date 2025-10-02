@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import os
 import time
+import pickle
 import pandas as pd
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
@@ -102,81 +103,105 @@ class CNNTransformerTrainingPipeline:
         self.logger.info(f"Device: {self.device_name}")
         self.logger.info(f"System: {DeviceManager.get_memory_info(self.device)}")
 
-
     def load_data(self) -> Dict[str, DataLoader]:
         """
-        Load and preprocess EEG data, returning DataLoaders for training, validation, and testing.
+        Load and preprocess EEG data from batch files, returning DataLoaders for training, validation, and testing.
         """
+        self.logger.info("Loading processed data from batch files...")
 
-        self.logger.info("Loading processed data...")
+        data_dir = self.config.processed_data_dir
 
-        processor = TransformerProcessor(config=self.config)
-        dataset = processor.load_processed_data(data_dir=self.config.processed_data_dir)
+        # Load batch info
+        batch_info_path = os.path.join(data_dir, 'batch_info.pkl')
+        if not os.path.exists(batch_info_path):
+            raise FileNotFoundError(f"batch_info.pkl not found in {data_dir}")
 
-        sequences = dataset['sequences']
-        labels = dataset['labels']
+        with open(batch_info_path, 'rb') as f:
+            batch_info = pickle.load(f)
 
-        self.logger.info(f"Loaded data shape: {sequences.shape}")
-        self.logger.info(f"Memory usage: ~{sequences.nbytes / 1024 ** 2:.0f} MB")
-        self.logger.info(f"Total samples: {len(sequences):,}")
-        self.logger.info(f"Seizure samples: {np.sum(labels):,} ({np.mean(labels) * 100:.1f}%)")
+        self.logger.info(f"Found {len(batch_info['batch_files'])} batch files")
 
-        # sequences.shape = (num_samples, sequence_length, num_channels)
-        self.config.sequence_length = sequences.shape[1]
-        self.config.input_dim = sequences.shape[2]
+        # Load all batches
+        total_samples = 0
+        all_labels_list = []
 
-        # Split data with stratification
-        x_temp, x_test, y_temp, y_test = train_test_split(
-            sequences, labels,
+        for batch_file in tqdm(batch_info['batch_files'], desc="Scanning batches"):
+            if not os.path.exists(batch_file):
+                self.logger.warning(f"Batch file not found: {batch_file}")
+                continue
+
+            data = np.load(batch_file, allow_pickle=True)
+            labels = data['labels']
+            all_labels_list.append(labels)
+            total_samples += len(labels)
+
+
+            if total_samples == len(labels):  # First batch
+                self.config.sequence_length = data['sequences'].shape[1]
+                self.config.input_dim = data['sequences'].shape[2]
+
+
+        # Concatenate only labels for stratified split
+        all_labels = np.concatenate(all_labels_list, axis=0)
+        all_indices = np.arange(total_samples)
+
+        self.logger.info(f"Total samples: {total_samples:,}")
+        self.logger.info(f"Seizure samples: {np.sum(all_labels):,} ({np.mean(all_labels) * 100:.1f}%)")
+
+        # Split indices with stratification
+        idx_temp, idx_test, y_temp, y_test = train_test_split(
+            all_indices, all_labels,
             test_size=self.config.test_size,
             random_state=self.config.random_state,
-            stratify=labels # use when the dataset is imbalanced , it ensures that all splits maintain original class distribution
+            stratify=all_labels
         )
 
         val_size_adjusted = self.config.val_size / (1 - self.config.test_size)
-        x_train, x_val, y_train, y_val = train_test_split(
-            x_temp, y_temp, # use the remainder
+        idx_train, idx_val, y_train, y_val = train_test_split(
+            idx_temp, y_temp,
             test_size=val_size_adjusted,
             random_state=self.config.random_state,
-            stratify=y_temp # keep seizure ratio
+            stratify=y_temp
         )
 
+        self.train_labels = y_train
+
         self.logger.info(f"Data splits:")
-        self.logger.info(f"  Train: {len(x_train):,} samples ({np.mean(y_train) * 100:.1f}% seizure)")
-        self.logger.info(f"  Val:   {len(x_val):,} samples ({np.mean(y_val) * 100:.1f}% seizure)")
-        self.logger.info(f"  Test:  {len(x_test):,} samples ({np.mean(y_test) * 100:.1f}% seizure)")
+        self.logger.info(f"  Train: {len(idx_train):,} samples ({np.mean(y_train) * 100:.1f}% seizure)")
+        self.logger.info(f"  Val:   {len(idx_val):,} samples ({np.mean(y_val) * 100:.1f}% seizure)")
+        self.logger.info(f"  Test:  {len(idx_test):,} samples ({np.mean(y_test) * 100:.1f}% seizure)")
 
         # Create Datasets
-        train_dataset = EEGSequenceDataset(x_train, y_train)
-        val_dataset = EEGSequenceDataset(x_val, y_val)
-        test_dataset = EEGSequenceDataset(x_test, y_test)
+        train_dataset = EEGSequenceDataset(batch_info['batch_files'], idx_train.tolist())
+        val_dataset = EEGSequenceDataset(batch_info['batch_files'], idx_val.tolist())
+        test_dataset = EEGSequenceDataset(batch_info['batch_files'], idx_test.tolist())
 
-        # Create DataLoaders (loading and batching data during training and evaluation)
+        # Create DataLoaders
         data_loaders = {
-            "train" : DataLoader(
+            "train": DataLoader(
                 dataset=train_dataset,
                 batch_size=self.config.batch_size,
                 shuffle=True,
                 num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory and self.device.type != "mps", # false for MAC
-                persistent_workers = True if self.config.num_workers > 0 else False
+                pin_memory=self.config.pin_memory and self.device.type != "mps",
+                persistent_workers=True if self.config.num_workers > 0 else False
             ),
 
-            "val" : DataLoader(
+            "val": DataLoader(
                 dataset=val_dataset,
                 batch_size=self.config.batch_size,
                 shuffle=False,
                 num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory and self.device.type != "mps",  # false for MAC
+                pin_memory=self.config.pin_memory and self.device.type != "mps",
                 persistent_workers=True if self.config.num_workers > 0 else False
             ),
 
-            "test" : DataLoader(
+            "test": DataLoader(
                 dataset=test_dataset,
                 batch_size=self.config.batch_size,
                 shuffle=False,
                 num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory and self.device.type != "mps",  # false for MAC
+                pin_memory=self.config.pin_memory and self.device.type != "mps",
                 persistent_workers=True if self.config.num_workers > 0 else False
             )
         }
@@ -210,17 +235,11 @@ class CNNTransformerTrainingPipeline:
         model_size_mb = total_params * 4 / 1024 ** 2 # calculates the memory size in MB
         self.logger.info(f"Model: {total_params:,} parameters (~{model_size_mb:.1f} MB)")
 
-        # Calculate class weights for imbalanced data
-        train_dataset = data_loaders['train'].dataset
-        # labels = [train_dataset[i][1].item() for i in range(len(train_dataset))]
-        labels = []
-        for _, batch_labels in data_loaders['train']:
-            labels.extend(batch_labels.cpu().numpy())
-
+        self.logger.info("Calculating class weights from training labels...")
         class_weights = compute_class_weight(
             class_weight="balanced",
-            classes=np.unique(labels),
-            y=labels
+            classes=np.unique(self.train_labels),
+            y=self.train_labels
         )
         class_weights = torch.FloatTensor(class_weights).to(self.device)
 
@@ -333,9 +352,9 @@ class CNNTransformerTrainingPipeline:
         with torch.no_grad(): # to disable gradient computation for validation
             progress_bar = tqdm(dataloader, desc="Validating", leave=False)
 
-            for batch in progress_bar:
-                sequences = batch['sequence'].to(self.device, non_blocking=True)
-                labels = batch['label'].to(self.device, non_blocking=True)
+            for sequences, labels in progress_bar:
+                sequences = sequences.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
 
                 # Forward pass
                 outputs = self.model(sequences)
@@ -451,7 +470,7 @@ class CNNTransformerTrainingPipeline:
         start_time = time.time()
 
         # Training loop
-        for epoch in range(1, self.config.num_epochs):
+        for epoch in range(self.config.num_epochs):
             epoch_start_time = time.time()
 
             # Clear memory at start of epoch
@@ -467,10 +486,10 @@ class CNNTransformerTrainingPipeline:
             self.scheduler.step(val_loss)
 
             # Save metrics
-            self.train_losses.append(epoch)
-            self.val_losses.append(epoch)
-            self.train_accuracies.append(epoch)
-            self.val_accuracies.append(epoch)
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
+            self.train_accuracies.append(train_acc)
+            self.val_accuracies.append(val_acc)
 
             epoch_time = time.time() - epoch_start_time
 
@@ -479,7 +498,7 @@ class CNNTransformerTrainingPipeline:
                 f"Epoch {epoch + 1:3d}/{self.config.num_epochs} | "
                 f"Train: {train_loss:.4f}/{train_acc:5.1f}% | "
                 f"Val: {val_loss:.4f}/{val_acc:5.1f}% | "
-                f"F1: {val_metrics['f1']:.3f} | AUC: {val_metrics['auc']:.3f} | "
+                f"F1: {val_metrics['f1_score']:.3f} | AUC: {val_metrics['roc_auc']:.3f} | "
                 f"Time: {epoch_time:4.1f}s"
             )
 
@@ -534,11 +553,11 @@ class CNNTransformerTrainingPipeline:
         results = {
             'model': 'CNN-Transformer',
             'device': self.device_name,
-            'test_accuracy': test_metrics.get('precision', 0) * 100, # use precision as proxy for accuracy, if not try 'accuracy'
+            'test_accuracy': test_metrics.get('accuracy', 0), # use precision as proxy for accuracy, if not try 'accuracy'
             'test_precision': test_metrics.get('precision', 0),
             'test_roc_auc': test_metrics.get('roc_auc', 0),
             'test_recall': test_metrics.get('recall', 0),
-            'test_f1_score': test_metrics.get('f1', 0),
+            'test_f1_score': test_metrics.get('f1_score', 0),
             'seizure_precision': test_metrics.get('seizure_precision', 0),
             'seizure_recall': test_metrics.get('seizure_recall', 0),
             'seizure_f1': test_metrics.get('seizure_f1', 0),
@@ -594,19 +613,20 @@ def main():
     config = TransformerConfig(
 
         # Model parameters
-        d_model=128,
+        d_model=64,
         nhead=8,
-        num_layers=4,
+        num_layers=3,
+        cnn_channels=[32, 64, 128],
         dropout=0.1,
 
         # Training
-        batch_size=16,
+        batch_size=8,
         num_epochs=50,
         learning_rate=1e-4,
         patience=10,
 
         # MPS
-        num_workers=4,
+        num_workers=0,
         pin_memory=False,
 
         # Paths
