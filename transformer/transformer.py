@@ -1,15 +1,19 @@
 import logging
 import numpy as np
-import psutil
 import torch
 import os
-
+import time
+import pandas as pd
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from sklearn.model_selection import train_test_split
+from sklearn.utils import compute_class_weight
 from torch.utils.data import DataLoader
+from tqdm import tqdm
+from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, confusion_matrix
 from preprocessing_transformer import TransformerProcessor, EEGSequenceDataset
 from transformer_models import CNNTransformer, ModelConfig
+from mps_configuration import DeviceManager
 
 @dataclass
 class TransformerConfig:
@@ -21,7 +25,6 @@ class TransformerConfig:
     num_layers: int = 4 # Number of transformer encoder layers
     cnn_channels: List[int] = None
     dropout: float = 0.1 # Dropout rate for regularization, 10% of neurons are randomly dropped during training
-
 
     # Training Hyperparameters
     batch_size: int = 16 # number of samples per gradient update (one forward pass)
@@ -81,7 +84,7 @@ class CNNTransformerTrainingPipeline:
     def __init__(self, config: TransformerConfig):
         self.config = config
         self.device, self.device_name = DeviceManager.get_optimal_device()
-        self.logger = self.setup_logger()
+        self.logger = self._setup_logging()
 
         # Model Components
         self.model = None
@@ -149,7 +152,6 @@ class CNNTransformerTrainingPipeline:
         test_dataset = EEGSequenceDataset(x_test, y_test)
 
         # Create DataLoaders (loading and batching data during training and evaluation)
-
         data_loaders = {
             "train" : DataLoader(
                 dataset=train_dataset,
@@ -182,7 +184,7 @@ class CNNTransformerTrainingPipeline:
         return data_loaders
 
 
-    def build_model(self):
+    def build_model(self, data_loaders: Dict[str, DataLoader]):
         """
         Build the CNN-Transformer model, optimizer, loss function, and learning rate scheduler.
         """
@@ -201,13 +203,377 @@ class CNNTransformerTrainingPipeline:
         )
 
         # Create the model
-        self.model = CNNTransformer()
+        self.model = CNNTransformer(model_config).to(self.device)
+
+        # Count parameters
+        total_params = self.model.count_parameters(self.model)
+        model_size_mb = total_params * 4 / 1024 ** 2 # calculates the memory size in MB
+        self.logger.info(f"Model: {total_params:,} parameters (~{model_size_mb:.1f} MB)")
+
+        # Calculate class weights for imbalanced data
+        train_dataset = data_loaders['train'].dataset
+        # labels = [train_dataset[i][1].item() for i in range(len(train_dataset))]
+        labels = []
+        for _, batch_labels in data_loaders['train']:
+            labels.extend(batch_labels.cpu().numpy())
+
+        class_weights = compute_class_weight(
+            class_weight="balanced",
+            classes=np.unique(labels),
+            y=labels
+        )
+        class_weights = torch.FloatTensor(class_weights).to(self.device)
+
+        # Create optimizer
+        self.optimizer = torch.optim.AdamW(
+            params = self.model.parameters(),
+            lr = self.config.learning_rate,
+            weight_decay = self.config.weight_decay, # L2 regularization, penalizes large weights
+            eps = 1e-8 # to prevent division by zero in AdamW algorithm
+        )
+
+        # Loss function
+        self.criterion = torch.nn.CrossEntropyLoss(weight = class_weights) # for binary classification
+
+        # Create learning rate scheduler
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( # reduce LR when a metric has stopped improving
+            optimizer = self.optimizer,
+            mode = 'min',
+            factor = 0.5,
+            patience = 3,
+            min_lr= 1e-7
+        )
+
+        self.logger.info("Model and training components initialized")
 
 
+    def train_epoch(self, data_loader: DataLoader) -> Tuple[float, float]:
+        """
+        Train the model for one epoch - complete pass through the data.
+        """
+
+        self.model.train()
+
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        progress_bar = tqdm(data_loader, desc="Training", leave=False,
+                            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+
+        # Batch processing
+        for batch_idx, (sequences, labels) in enumerate(progress_bar):
+            try:
+                sequences = sequences.to(self.device, non_blocking=(self.device.type == "mps"))
+                labels = labels.to(self.device, non_blocking=(self.device.type == "mps"))
+
+                # Zero gradients - clears old gradients from the last step
+                self.optimizer.zero_grad()
+
+                # Forward pass - compute model output, gets predictions
+                outputs = self.model(sequences)
+                loss = self.criterion(outputs, labels)
+
+                # Backward pass - calculate gradients
+                loss.backward()
+
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                # Update weights - updates model parameters
+                self.optimizer.step()
+
+                # Statistics
+                running_loss += loss.item()
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+                # Update progress bar
+                current_acc = 100 * correct / total
+                progress_bar.set_postfix({
+                    'Loss': f'{loss.item():.4f}',
+                    'Acc': f'{current_acc:.1f}%',
+                    'LR': f'{self.optimizer.param_groups[0]["lr"]:.2e}'
+                })
+
+                # Clear cache periodically for MPS
+                if batch_idx % 50 == 0 and batch_idx > 0:
+                    DeviceManager.clear_memory(self.device)
+
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    self.logger.warning(f"Memory warning at batch {batch_idx}")
+                    DeviceManager.clear_memory(self.device)
+                    continue
+                else:
+                    raise e
+
+        epoch_loss = running_loss / len(data_loader)
+        epoch_acc = 100 * correct / total
+
+        return epoch_loss, epoch_acc
 
 
+    def validate_epoch(self, dataloader: DataLoader) -> Tuple[float, float, Dict]:
+        """
+        Validate the model for one epoch - complete pass through the validation data.
+        """
+
+        self.model.eval() # will disable dropout and batchnorm layers
+
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        all_predictions = []
+        all_labels = []
+        all_probabilities = []
+
+        with torch.no_grad(): # to disable gradient computation for validation
+            progress_bar = tqdm(dataloader, desc="Validating", leave=False)
+
+            for batch in progress_bar:
+                sequences = batch['sequence'].to(self.device, non_blocking=True)
+                labels = batch['label'].to(self.device, non_blocking=True)
+
+                # Forward pass
+                outputs = self.model(sequences)
+                loss = self.criterion(outputs, labels)
+
+                # Statistics
+                running_loss += loss.item()
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+                # Collect for detailed metrics
+                probabilities = torch.softmax(outputs, dim=1)
+                all_predictions.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                all_probabilities.extend(probabilities[:, 1].cpu().numpy())
+
+                progress_bar.set_postfix({
+                    'Loss': f'{loss.item():.4f}',
+                    'Acc': f'{100 * correct / total:.1f}%'
+                })
+
+        epoch_loss = running_loss / len(dataloader)
+        epoch_acc = 100 * correct / total
+
+        metrics = self._calculate_metrics(all_labels, all_predictions, all_probabilities)
+
+        return epoch_loss, epoch_acc, metrics
 
 
+    def _calculate_metrics(self, true_labels: List[int], predictions: List[int], probabilities: List[float]) -> Dict:
+        """
+        Calculate detailed metrics like precision, recall, F1-score.
+        """
+
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            true_labels, predictions, average='weighted', zero_division=0
+        )
+
+        precision_classes, recall_classes, f1_classes, _ = precision_recall_fscore_support(
+            true_labels, predictions, average=None, zero_division=0
+        )
+
+        roc_auc = roc_auc_score(true_labels, probabilities)
+
+        cm = confusion_matrix(true_labels, predictions)
+
+        metrics = {
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'roc_auc': roc_auc,
+            'confusion_matrix': cm,
+            'seizure_precision': precision_classes[1] if len(precision_classes) > 1 else 0,
+            'seizure_recall': recall_classes[1] if len(recall_classes) > 1 else 0,
+            'seizure_f1': f1_classes[1] if len(f1_classes) > 1 else 0,
+        }
+
+        return metrics
+
+    def load_model(self):
+        """Load model checkpoint"""
+
+        if not os.path.exists(self.config.model_save_path):
+            raise FileNotFoundError(f"Model file not found: {self.config.model_save_path}")
+
+        checkpoint = torch.load(self.config.model_save_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+
+        # Load training history
+        if 'train_losses' in checkpoint:
+            self.train_losses = checkpoint['train_losses']
+            self.val_losses = checkpoint['val_losses']
+            self.train_accuracies = checkpoint['train_accuracies']
+            self.val_accuracies = checkpoint['val_accuracies']
+
+        self.logger.info(f"Model loaded from {self.config.model_save_path}")
+
+
+    def save_model(self):
+        """
+        Save model checkpoint
+        """
+
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'config': self.config,
+            'device_name': self.device_name,
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'train_accuracies': self.train_accuracies,
+            'val_accuracies': self.val_accuracies,
+            'epoch': len(self.train_losses)
+        }
+
+        torch.save(checkpoint, self.config.model_save_path)
+
+
+    def train(self, dataloader: Dict[str, DataLoader]) -> Dict:
+        """
+        Full training loop with early stopping and model saving.
+        """
+
+        self.logger.info(f"Starting training for {self.config.num_epochs} epochs")
+        self.logger.info(f"Device: {self.device_name}")
+        self.logger.info(f"Batch size: {self.config.batch_size}")
+        self.logger.info(f"Learning rate: {self.config.learning_rate}")
+
+        best_val_loss = float('inf')
+        best_metrics = None
+        start_time = time.time()
+
+        # Training loop
+        for epoch in range(1, self.config.num_epochs):
+            epoch_start_time = time.time()
+
+            # Clear memory at start of epoch
+            DeviceManager.clear_memory(device = self.device)
+
+            # Training
+            train_loss, train_acc = self.train_epoch(dataloader['train'])
+
+            # Validation
+            val_loss, val_acc, val_metrics = self.validate_epoch(dataloader['val'])
+
+            # Update learning rate
+            self.scheduler.step(val_loss)
+
+            # Save metrics
+            self.train_losses.append(epoch)
+            self.val_losses.append(epoch)
+            self.train_accuracies.append(epoch)
+            self.val_accuracies.append(epoch)
+
+            epoch_time = time.time() - epoch_start_time
+
+            memory_info = DeviceManager.get_memory_info(self.device)
+            self.logger.info(
+                f"Epoch {epoch + 1:3d}/{self.config.num_epochs} | "
+                f"Train: {train_loss:.4f}/{train_acc:5.1f}% | "
+                f"Val: {val_loss:.4f}/{val_acc:5.1f}% | "
+                f"F1: {val_metrics['f1']:.3f} | AUC: {val_metrics['auc']:.3f} | "
+                f"Time: {epoch_time:4.1f}s"
+            )
+
+            if epoch % 10 == 0:
+                self.logger.info(f"Memory info: {memory_info}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_metrics = val_metrics.copy()
+                self.save_model() # Save best model
+                self.logger.info(f"New best model saved (Val Loss: {val_loss:.4f})")
+
+            # Early stopping check
+            if self.early_stopping(val_loss):
+                self.logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                break
+
+
+        total_time = time.time() - start_time
+        self.logger.info(f"Training completed in {total_time/60:.1f} minutes")
+
+        return best_metrics
+
+
+    def evaluate(self, dataloader: DataLoader) -> Dict:
+
+        """
+        Evaluate the trained model on the test set
+        """
+
+        self.load_model()
+
+        DeviceManager.clear_memory(self.device)
+
+        # Evaluate
+        test_loss, test_acc, test_metrics = self.validate_epoch(dataloader)
+
+        self.logger.info("TEST SET RESULTS")
+        self.logger.info(f"Test Loss: {test_loss:.4f}%")
+        self.logger.info(f"Test Accuracy: {test_acc:.4f}%")
+        self.logger.info(f"Test F1 Score:  {test_metrics['f1']:.3f}")
+        self.logger.info(f"Test AUC:  {test_metrics['auc']:.3f}")
+
+        return test_metrics
+
+
+    def save_results(self, test_metrics: Dict):
+        """
+        Save training results and training history to CSV files
+        """
+
+        results = {
+            'model': 'CNN-Transformer',
+            'device': self.device_name,
+            'test_accuracy': test_metrics.get('precision', 0) * 100, # use precision as proxy for accuracy, if not try 'accuracy'
+            'test_precision': test_metrics.get('precision', 0),
+            'test_roc_auc': test_metrics.get('roc_auc', 0),
+            'test_recall': test_metrics.get('recall', 0),
+            'test_f1_score': test_metrics.get('f1', 0),
+            'seizure_precision': test_metrics.get('seizure_precision', 0),
+            'seizure_recall': test_metrics.get('seizure_recall', 0),
+            'seizure_f1': test_metrics.get('seizure_f1', 0),
+            'total_params': self.model.count_parameters(self.model) if self.model else 0,
+            'training_epochs': len(self.train_losses),
+            'best_val_loss': min(self.val_losses) if self.val_losses else 0,
+            'final_epoch': len(self.train_losses) if self.train_losses else 0,
+            'final_lr': self.optimizer.param_groups[0]['lr'],
+            'batch_size': self.config.batch_size,
+            'd_model': self.config.d_model,
+            'num_layers': self.config.num_layers
+        }
+        df = pd.DataFrame([results])
+        results_file = os.path.join(self.config.output_dir, 'transformer_results.csv')
+        df.to_csv(results_file, index=False)
+
+        # Save training history
+        training_history = pd.DataFrame({
+            'epoch': list(range(1, len(self.train_losses))),
+            'train_loss': self.train_losses,
+            'val_loss': self.val_losses,
+            'train_accuracy': self.train_accuracies,
+            'val_accuracy': self.val_accuracies
+        })
+        history_file = os.path.join(self.config.output_dir, 'training_history.csv')
+        training_history.to_csv(history_file, index=False)
+
+        # Save confusion matrix
+        cm_df = pd.DataFrame(test_metrics['confusion_matrix'],
+                             index=['True_Non_Seizure', 'True_Seizure'],
+                             columns=['Predicted_Non_Seizure', 'Predicted_Seizure'])
+        cm_file = os.path.join(self.config.output_dir, 'confusion_matrix.csv')
+        cm_df.to_csv(cm_file)
+
+        self.logger.info(f"Results saved to {self.config.output_dir}")
 
 
     def _setup_logging(self):
@@ -223,47 +589,98 @@ class CNNTransformerTrainingPipeline:
         return logging.getLogger(__name__)
 
 
-class DeviceManager:
-    """Handles device detection and optimization for Mac/MPS"""
+def main():
 
-    @staticmethod
-    def get_optimal_device():
-        """Get the best available device with Mac optimization"""
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-            device_name = "Apple Silicon GPU (MPS)"
-            print(f"Using {device_name}")
+    config = TransformerConfig(
 
-            # Set optimal CPU threads for MPS
-            cpu_count = psutil.cpu_count()
-            torch.set_num_threads(min(8, cpu_count))
-            print(f"CPU threads: {torch.get_num_threads()}")
+        # Model parameters
+        d_model=128,
+        nhead=8,
+        num_layers=4,
+        dropout=0.1,
 
-        else: # if no MPS available, fallback to CPU
-            device = torch.device("cpu")
-            device_name = "CPU"
+        # Training
+        batch_size=16,
+        num_epochs=50,
+        learning_rate=1e-4,
+        patience=10,
 
-            # Optimize for ARM CPU
-            cpu_count = psutil.cpu_count()
-            optimal_threads = min(8, cpu_count)
-            torch.set_num_threads(optimal_threads)
-            print(f"Using {device_name} with {optimal_threads} threads")
+        # MPS
+        num_workers=4,
+        pin_memory=False,
 
-        return device, device_name
+        # Paths
+        processed_data_dir="processed_data/transformer_sequences",
+        output_dir="output/transformer_results",
+        model_save_path="models/cnn_transformer_best.pth"
+    )
 
-    @staticmethod
-    def clear_memory(device):
-        """Clear memory cache based on device"""
-        if device.type == "mps":
-            torch.mps.empty_cache()
+    print(f"Data: {config.processed_data_dir}")
+    print(f"Output: {config.output_dir}")
+    print(f"Batch size: {config.batch_size} ")
+    print(f"Max epochs: {config.num_epochs}")
+    print(f"Learning rate: {config.learning_rate}")
+    print()
 
-    @staticmethod
-    def get_memory_info(device):
-        """Get memory information if available"""
-        if device.type == "mps":
-            return "MPS memory management handled automatically"
+    # Initialize trainer
+    trainer = CNNTransformerTrainingPipeline(config)
 
+    try:
+        dataloaders = trainer.load_data()
+
+        print("Building CNN-Transformer model...")
+        trainer.build_model(dataloaders)
+
+        print("Starting training...")
+        print(f"Model saved to: {config.model_save_path}")
+        print(f"Results saved to: {config.output_dir}")
+        print(f"Trained on: {trainer.device_name}")
+        print()
+
+        best_val_metrics = trainer.train(dataloaders)
+
+        print("Evaluating on test set...")
+        test_metrics = trainer.evaluate(dataloaders['test'])
+
+        print("Saving results...")
+        trainer.save_results(test_metrics)
+
+        print("Training completed successfully!")
+        print("FINAL RESULTS:")
+        print(f"Test F1 Score: {test_metrics['f1']:.3f}")
+        print(f"Test AUC: {test_metrics['auc']:.3f}")
+        print(f"Seizure F1: {test_metrics['seizure_f1']:.3f}")
+
+        print(f"Model saved to: {config.model_save_path}")
+        print(f"Results saved to: {config.output_dir}")
+        print(f"Trained on: {trainer.device_name}")
+        print()
+
+    except FileNotFoundError as e:
+        print(f"File not found: {str(e)}")
+        print("Solution: Run transformer_preprocessing.py first!")
+        print("This will convert your EDF files to transformer-ready sequences")
+
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print(f"Out of memory error: {str(e)}")
+            print("Solutions for Mac:")
+            print("   1. Reduce batch_size in config (try 8 or 4)")
+            print("   2. Reduce d_model (try 64 or 96)")
+            print("   3. Reduce num_layers (try 3 or 2)")
+            print("   4. Close other applications to free memory")
         else:
-            memory = psutil.virtual_memory()
-            return f"RAM: {memory.used / 1024 ** 3:.1f}GB / {memory.total / 1024 ** 3:.1f}GB ({memory.percent:.1f}% used)"
+            print(f"Runtime error: {str(e)}")
 
+    except Exception as e:
+        print(f"Training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        print("\n Troubleshooting tips:")
+        print("   1. Check if MPS is available: python -c 'import torch; print(torch.backends.mps.is_available())'")
+        print("   2. Update PyTorch: pip install --upgrade torch torchvision")
+        print("   3. Check system resources and close other apps")
+
+if __name__ == '__main__':
+    main()
