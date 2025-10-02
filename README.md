@@ -1,6 +1,10 @@
-# 🧠 EEG Seizure Prediction using Signal Feature Extraction and Machine Learning
+# 🧠 EEG Seizure Prediction using Feature Extraction and Machine Learning & Transformers
 
-This project focuses on extracting meaningful features from EEG (electroencephalogram) signals for the purpose of **seizure detection and prediction**. It processes raw EEG data into time-domain, frequency-domain, and nonlinear features, which are then used to train and evaluate **machine learning models** for seizure classification.
+This project focuses on extracting meaningful features from EEG (electroencephalogram) signals for the purpose of **seizure detection and prediction**. It processes raw EEG data into time-domain, frequency-domain, and nonlinear features. It combines two complementary approaches: 
+
+**1. Feature-based Machine Learning** – Extracting statistical, spectral, and nonlinear features from EEG signals and training classical ML classifiers.
+
+**2. Deep Learning with Transformers** – Leveraging sequence modeling with Transformer architectures directly on preprocessed EEG signals for temporal pattern learning.
 
 ---
 
@@ -31,16 +35,51 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 
 ---
 
-## 🤖 Machine Learning Models
+## 🤖 Models
 
+### 1. Machine Learning ###
 The extracted features are used to train and evaluate the following classifiers:
 
 - **Support Vector Machine (SVM)**
 - **Random Forest**
 - **K-Nearest Neighbors (KNN)**
 - **Logistic Regression**
-- **Gradient Boosting (e.g., XGBoost)**
+- **Gradient Boosting (e.g., ADABoost)**
 - Performance is evaluated using metrics such as accuracy, precision, recall, F1-score, and confusion matrix.
+
+### 2. Deep Learning (Transformer Architecture)  
+
+Instead of relying on hand-crafted features, we directly model the EEG sequences using a **Transformer Encoder**.  
+
+####  Architecture Overview  
+- **Input Representation**:  
+  - EEG windows are represented as sequences of shape **(batch_size, sequence_length, n_channels)**.  
+  - Each time step (multi-channel EEG vector) is projected into a **d_model** dimensional embedding via a learnable linear layer.  
+
+- **Positional Encoding**:  
+  - Since EEG data is sequential, sinusoidal positional encodings are added to embeddings to retain temporal order information.  
+
+- **Transformer Encoder Layers**:  
+  - Multiple stacked encoder layers (e.g., 2–6)  
+  - Each encoder contains:  
+    - **Multi-Head Self-Attention (MHSA)** to capture long-range dependencies between EEG time steps.  
+    - **Feed-Forward Networks (FFN)** applied to each position.  
+    - **Layer Normalization & Residual Connections** for stable training.  
+
+- **Classification Head**:  
+  - The output embeddings are pooled (mean/max/CLS token)  
+  - A final **fully connected layer** maps to seizure vs. non-seizure classes.  
+
+#### ⚙️ Training Setup  
+- Optimizer: **AdamW** with weight decay  
+- Scheduler: **Cosine Annealing / Step LR**  
+- Loss: **Cross-Entropy Loss**  
+- Regularization: Dropout + gradient clipping  
+
+#### 🔍 Why Transformers for EEG?  
+- Can **capture long-range temporal dependencies** across EEG signals (spikes, oscillations, preictal patterns).  
+- Handles **multi-channel correlations** better than 1D-CNNs or RNNs.  
+- Scales well with more data and patients.  
 
 ---
 
