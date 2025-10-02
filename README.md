@@ -1,4 +1,4 @@
-# 🧠 EEG Seizure Prediction using Feature Extraction and Machine Learning & Transformers
+# 🧠 EEG-based seizure prediction combining feature-based machine learning and Transformer-based deep learning for end-to-end sequence learning.
 
 This project focuses on extracting meaningful features from EEG (electroencephalogram) signals for the purpose of **seizure detection and prediction**. It processes raw EEG data into time-domain, frequency-domain, and nonlinear features. It combines two complementary approaches: 
 
