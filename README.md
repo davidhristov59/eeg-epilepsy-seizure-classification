@@ -1,4 +1,4 @@
-# 🧠 EEG-based seizure prediction combining feature-based machine learning and Transformer-based deep learning for end-to-end sequence learning.
+# EEG-based seizure prediction combining feature-based machine learning and Transformer-based deep learning for end-to-end sequence learning.
 
 This project focuses on extracting meaningful features from EEG (electroencephalogram) signals for the purpose of **seizure detection and prediction**. It processes raw EEG data into time-domain, frequency-domain, and nonlinear features. It combines two complementary approaches: 
 
@@ -8,7 +8,7 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 
 ---
 
-## ⚙️ Features Extracted
+## Features Extracted
 
 ### Time-domain (Temporal) features
 - Mean, variance, root mean square (RMS)
@@ -35,7 +35,7 @@ This project focuses on extracting meaningful features from EEG (electroencephal
 
 ---
 
-## 🤖 Models
+## Models
 
 ### 1. Machine Learning ###
 The extracted features are used to train and evaluate the following classifiers:
@@ -70,7 +70,7 @@ Instead of relying on hand-crafted features, we directly model the EEG sequences
   - The output embeddings are pooled (mean/max/CLS token)  
   - A final **fully connected layer** maps to seizure vs. non-seizure classes.  
 
-#### ⚙️ Training Setup  
+#### Training Setup  
 - Optimizer: **AdamW** with weight decay  
 - Scheduler: **Cosine Annealing / Step LR**  
 - Loss: **Cross-Entropy Loss**  
@@ -83,7 +83,7 @@ Instead of relying on hand-crafted features, we directly model the EEG sequences
 
 ---
 
-## 🧪 Methods Used
+## Methods Used
 
 - **Sliding Window Technique**: Processes EEG signals in small overlapping windows (e.g., 1s with 50% overlap) to capture temporal patterns.
 - **Fast Fourier Transform (FFT)**: Converts signal from time to frequency domain.
@@ -93,7 +93,7 @@ Instead of relying on hand-crafted features, we directly model the EEG sequences
 
 ---
 
-## 🚀 How to Run
+## How to Run
 
 1. Clone the repository:
    ```bash
@@ -122,5 +122,5 @@ Instead of relying on hand-crafted features, we directly model the EEG sequences
 
   ---
 
-## 🧠 Dataset
+## Dataset
 [CHB-MIT EEG Dataset](https://physionet.org/content/chbmit/1.0.0/): Pediatric EEG dataset used for seizure detection publicly available on PhysioNet, from patients with epilepsy
