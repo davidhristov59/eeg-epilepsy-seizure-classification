@@ -3,8 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-OUTPUT_CSV = 'output/classification_results/all_results.csv'
-RESULTS_FOLDER = "plots"
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_CSV = os.path.join(project_root, "output", "classification_results", "all_results.csv")
+RESULTS_FOLDER = os.path.join(project_root, "plots")
 
 df = pd.read_csv(OUTPUT_CSV)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)

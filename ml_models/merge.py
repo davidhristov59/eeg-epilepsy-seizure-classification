@@ -3,115 +3,136 @@ import os
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
+import argparse
 
-DATAFOLDER = "processed_data"
-OUTPUT_FILE = "subjects.csv"
+# ---------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------
+DATAFOLDER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "processed_data")
+OUTPUT_FILE = "subjects.csv"        # Default output
+OUTPUT_PARQUET = "subjects.parquet" # Optional faster format
+MAX_WORKERS = min(8, (os.cpu_count() or 1) + 4)
 
-# Auto-detect optimal thread count based on CPU cores and I/O capacity
-MAX_WORKERS = min(8, (os.cpu_count() or 1) + 4)  # CPU cores + some I/O threads
-print(f"Using {MAX_WORKERS} threads (detected {os.cpu_count()} CPU cores)")
-
-
-def process_single_file(file_info):
-    """Process a single CSV file with optimizations"""
-    subfolder, files_path, subject_file = file_info
-    file_path = os.path.join(files_path, subject_file)
-
-    try:
-        # Optimizations for pandas
-        data = pd.read_csv(
-            file_path,
-            low_memory=False,  # Read entire file into memory for faster processing
-            engine='c',  # Use C parser (faster than python parser)
-        )
-        data["subject"] = subfolder
-        return data, None, file_path
-    except Exception as e:
-        return None, f"Error processing {file_path}: {str(e)}", file_path
-
-
-def get_memory_usage():
-    """Get current memory usage in GB"""
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+def get_memory_usage() -> float:
+    """Return current process memory usage in GB."""
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024 / 1024
 
 
-print("Scanning directories...")
-file_tasks = []
-subject_folders = set()
+def process_single_file(file_info):
+    """Read a single CSV file and ensure subject + recording_id columns."""
+    files_path, csv_file = file_info
+    file_path = os.path.join(files_path, csv_file)
 
-for subfolder in os.listdir(DATAFOLDER):
-    files_path = os.path.join(DATAFOLDER, subfolder)
-    if not os.path.isdir(files_path):
-        continue
+    try:
+        data = pd.read_csv(
+            file_path,
+            low_memory=False,
+            engine="c",  # Fast C parser
+        )
 
-    csv_files = [f for f in os.listdir(files_path) if f.endswith('.csv')]
-    if csv_files:
-        subject_folders.add(subfolder)
-        for subject_file in csv_files:
-            file_tasks.append((subfolder, files_path, subject_file))
+        # Derive subject from filename if not present
+        if "subject" not in data.columns:
+            parts = os.path.splitext(csv_file)[0].split("_")
+            data["subject"] = parts[0] if parts else "unknown"
 
-print(f"Found {len(subject_folders)} subjects with {len(file_tasks)} total files")
+        if "recording_id" not in data.columns:
+            data["recording_id"] = os.path.splitext(csv_file)[0]
 
-# Process files with multithreading
-all_dataframes = []
-errors = []
-current_subject = ""
+        return data, None, file_path
+    except Exception as e:
+        return None, f"Error processing {file_path}: {str(e)}", file_path
 
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    # Submit all tasks
-    future_to_file = {executor.submit(process_single_file, task): task for task in file_tasks}
+# ---------------------------------------------------------
+# Main merge logic
+# ---------------------------------------------------------
+def merge_all_subjects(datafolder: str = DATAFOLDER,
+                       output_file: str = OUTPUT_FILE,
+                       write_parquet: bool = True):
 
-    # Process completed tasks with progress bar
-    with tqdm(total=len(file_tasks), desc="Processing files", unit="file") as pbar:
-        for future in as_completed(future_to_file):
-            task = future_to_file[future]
-            subfolder = task[0]
+    print(f"Using up to {MAX_WORKERS} threads (detected {os.cpu_count()} cores)")
+    print(f"Scanning {datafolder} ...")
 
-            try:
-                data, error, file_path = future.result()
-                if error:
-                    errors.append(error)
-                else:
-                    all_dataframes.append(data)
+    csv_files = [f for f in os.listdir(datafolder) if f.endswith(".csv")]
+    if not csv_files:
+        print("❌ No CSV files found!")
+        return
 
-                # Update progress bar with current subject and memory usage
-                if subfolder != current_subject:
-                    current_subject = subfolder
+    print(f"Found {len(csv_files)} CSV files\n")
+    all_dataframes = []
+    errors = []
 
-                memory_gb = get_memory_usage()
-                pbar.set_postfix_str(f"{subfolder} | RAM: {memory_gb:.1f}GB")
-                pbar.update(1)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_file = {executor.submit(process_single_file, (datafolder, f)): f for f in csv_files}
 
-            except Exception as e:
-                errors.append(f"Unexpected error with {task}: {str(e)}")
-                pbar.update(1)
+        with tqdm(total=len(csv_files), desc="Processing files", unit="file") as pbar:
+            for future in as_completed(future_to_file):
+                try:
+                    data, error, _ = future.result()
+                    if error:
+                        errors.append(error)
+                    else:
+                        all_dataframes.append(data)
 
-print(f"\nProcessing complete!")
-print(f"Total subjects: {len(subject_folders)}")
-print(f"Total files processed: {len(all_dataframes)}")
-print(f"Memory usage: {get_memory_usage():.1f}GB")
+                    memory_gb = get_memory_usage()
+                    pbar.set_postfix_str(f"RAM: {memory_gb:.1f} GB")
+                    pbar.update(1)
 
-if errors:
-    print(f"⚠  {len(errors)} errors occurred:")
-    for error in errors[:3]:  # Show first 3 errors
-        print(f"  - {error}")
-    if len(errors) > 3:
-        print(f"  ... and {len(errors) - 3} more errors")
+                except Exception as e:
+                    errors.append(f"Unexpected error: {str(e)}")
+                    pbar.update(1)
 
-if all_dataframes:
+    print("\n✅ Processing complete!")
+    print(f"Files processed: {len(all_dataframes)}")
+    print(f"Current memory usage: {get_memory_usage():.1f} GB")
+
+    if errors:
+        print(f"\n⚠ {len(errors)} errors occurred:")
+        for err in errors[:5]:
+            print(f"  - {err}")
+        if len(errors) > 5:
+            print(f"  ... and {len(errors) - 5} more errors\n")
+
+    if not all_dataframes:
+        print("❌ No data found to combine!")
+        return
+
     print("\nCombining datasets...")
-    # Use concat with specific parameters for better performance
     result = pd.concat(all_dataframes, ignore_index=True, copy=False)
+    print(f"Combined shape: {result.shape}")
+    print(f"Columns: {list(result.columns)}")
 
-    output_path = os.path.join(DATAFOLDER, OUTPUT_FILE)
-    print("Saving to CSV...")
+    print("\nSaving merged dataset...")
+    output_path_csv = os.path.join(datafolder, output_file)
+    result.to_csv(output_path_csv, index=False, chunksize=10000)
+    print(f"✅ Saved CSV: {output_path_csv}")
 
-    # Optimize CSV writing
-    result.to_csv(output_path, index=False, chunksize=10000)
+    if write_parquet:
+        output_path_parquet = os.path.join(datafolder, OUTPUT_PARQUET)
+        result.to_parquet(output_path_parquet, index=False)
+        print(f"✅ Saved Parquet: {output_path_parquet}")
 
-    print(f"✅ Saved combined dataset: {output_path}")
-    print(f"Final shape: {result.shape}")
-    print(f"Final memory usage: {get_memory_usage():.1f}GB")
-else:
-    print("❌ No data found to combine!")
+    print("\n📊 Dataset summary:")
+    if "subject" in result.columns:
+        print("  Unique subjects:", result["subject"].nunique())
+    if "recording_id" in result.columns:
+        print("  Unique recordings:", result["recording_id"].nunique())
+        print(result.groupby("subject")["recording_id"].nunique().head())
+
+    print(f"\nFinal memory usage: {get_memory_usage():.1f} GB")
+
+
+# ---------------------------------------------------------
+# CLI
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Merge all recordings into a single CSV.")
+    parser.add_argument("--datafolder", default=DATAFOLDER, help="Folder containing CSV files")
+    parser.add_argument("--output", default=OUTPUT_FILE, help="Output CSV filename")
+    parser.add_argument("--no-parquet", action="store_true", help="Disable writing Parquet version")
+    args = parser.parse_args()
+
+    merge_all_subjects(args.datafolder, args.output, write_parquet=not args.no_parquet)

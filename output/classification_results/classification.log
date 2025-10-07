@@ -1,0 +1,56 @@
+2025-10-06 00:47:12,667 - __main__ - INFO - Loading data from /Users/ognentrajkovski/PycharmProjects/DataScienceProject/processed_data/subjects.csv
+2025-10-06 00:47:13,184 - __main__ - INFO - Dataset shape: (14173, 506)
+2025-10-06 00:47:13,244 - __main__ - INFO - ========================================
+2025-10-06 00:47:13,244 - __main__ - INFO - Training MLP
+2025-10-06 00:47:13,244 - __main__ - INFO - ========================================
+2025-10-06 00:47:13,244 - __main__ - INFO - Starting 5-fold StratifiedGroupKFold cross-validation
+2025-10-06 00:47:14,056 - __main__ - INFO - Fold 1 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:15,175 - __main__ - INFO - Fold 2 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:16,008 - __main__ - INFO - Fold 3 - Acc: 0.993, F1: 0.619
+2025-10-06 00:47:16,898 - __main__ - INFO - Fold 4 - Acc: 0.997, F1: 0.706
+2025-10-06 00:47:17,643 - __main__ - INFO - Fold 5 - Acc: 0.998, F1: 0.667
+2025-10-06 00:47:17,643 - __main__ - INFO - Training on full training set
+2025-10-06 00:47:18,684 - __main__ - INFO - Test Accuracy: 0.995, F1: 0.500
+2025-10-06 00:47:18,687 - __main__ - INFO - Saved results for MLP
+2025-10-06 00:47:18,688 - __main__ - INFO - ========================================
+2025-10-06 00:47:18,688 - __main__ - INFO - Training RandomForest
+2025-10-06 00:47:18,688 - __main__ - INFO - ========================================
+2025-10-06 00:47:18,688 - __main__ - INFO - Starting 5-fold StratifiedGroupKFold cross-validation
+2025-10-06 00:47:19,112 - __main__ - INFO - Fold 1 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:19,382 - __main__ - INFO - Fold 2 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:19,597 - __main__ - INFO - Fold 3 - Acc: 0.988, F1: 0.242
+2025-10-06 00:47:19,891 - __main__ - INFO - Fold 4 - Acc: 0.997, F1: 0.250
+2025-10-06 00:47:20,156 - __main__ - INFO - Fold 5 - Acc: 0.996, F1: 0.154
+2025-10-06 00:47:20,156 - __main__ - INFO - Training on full training set
+2025-10-06 00:47:20,490 - __main__ - INFO - Test Accuracy: 0.996, F1: 0.000
+2025-10-06 00:47:20,492 - __main__ - INFO - Saved results for RandomForest
+2025-10-06 00:47:20,492 - __main__ - INFO - ========================================
+2025-10-06 00:47:20,492 - __main__ - INFO - Training AdaBoost
+2025-10-06 00:47:20,492 - __main__ - INFO - ========================================
+2025-10-06 00:47:20,492 - __main__ - INFO - Starting 5-fold StratifiedGroupKFold cross-validation
+2025-10-06 00:47:30,218 - __main__ - INFO - Fold 1 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:39,866 - __main__ - INFO - Fold 2 - Acc: 0.000, F1: 0.000
+2025-10-06 00:47:49,542 - __main__ - INFO - Fold 3 - Acc: 0.991, F1: 0.474
+2025-10-06 00:47:59,496 - __main__ - INFO - Fold 4 - Acc: 0.997, F1: 0.545
+2025-10-06 00:48:08,410 - __main__ - INFO - Fold 5 - Acc: 0.995, F1: 0.519
+2025-10-06 00:48:08,410 - __main__ - INFO - Training on full training set
+2025-10-06 00:48:20,406 - __main__ - INFO - Test Accuracy: 0.997, F1: 0.609
+2025-10-06 00:48:20,408 - __main__ - INFO - Saved results for AdaBoost
+2025-10-06 00:48:20,408 - __main__ - INFO - ========================================
+2025-10-06 00:48:20,408 - __main__ - INFO - Training KNN
+2025-10-06 00:48:20,408 - __main__ - INFO - ========================================
+2025-10-06 00:48:20,408 - __main__ - INFO - Starting 5-fold StratifiedGroupKFold cross-validation
+2025-10-06 00:48:20,538 - __main__ - INFO - Fold 1 - Acc: 0.000, F1: 0.000
+2025-10-06 00:48:20,687 - __main__ - INFO - Fold 2 - Acc: 1.000, F1: 0.000
+2025-10-06 00:48:20,815 - __main__ - INFO - Fold 3 - Acc: 0.989, F1: 0.294
+2025-10-06 00:48:20,883 - __main__ - INFO - Fold 4 - Acc: 0.999, F1: 0.857
+2025-10-06 00:48:20,939 - __main__ - INFO - Fold 5 - Acc: 0.998, F1: 0.737
+2025-10-06 00:48:20,939 - __main__ - INFO - Training on full training set
+2025-10-06 00:48:21,036 - __main__ - INFO - Test Accuracy: 0.995, F1: 0.118
+2025-10-06 00:48:21,039 - __main__ - INFO - Saved results for KNN
+2025-10-06 00:48:21,040 - __main__ - INFO - ✅ Combined results saved to /Users/ognentrajkovski/PycharmProjects/DataScienceProject/output/classification_results/all_results.csv
+2025-10-06 00:48:21,040 - __main__ - INFO - Training complete for all models.
+2025-10-06 00:48:21,040 - __main__ - INFO - MLP - Acc: 0.995, F1: 0.500, Prec: 0.389
+2025-10-06 00:48:21,040 - __main__ - INFO - RandomForest - Acc: 0.996, F1: 0.000, Prec: 0.000
+2025-10-06 00:48:21,040 - __main__ - INFO - AdaBoost - Acc: 0.997, F1: 0.609, Prec: 0.538
+2025-10-06 00:48:21,040 - __main__ - INFO - KNN - Acc: 0.995, F1: 0.118, Prec: 0.143
